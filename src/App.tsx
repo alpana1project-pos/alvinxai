@@ -16,6 +16,11 @@ function formatDate(value: string) {
   return new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
+function titleFrom(text: string) {
+  const clean = text.replace(/^\s*(catat|ingat|todo|ide)\s*[:,-]?\s*/i, "").trim();
+  return clean.length > 70 ? `${clean.slice(0, 67)}...` : clean;
+}
+
 export default function App() {
   const [section, setSection] = useState<Section>("overview");
   const [items, setItems] = useState<Item[]>([]);
@@ -23,7 +28,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([{ role: "assistant", content: "Halo bro 👋 Gue Alvin. Tulis aja apa yang lagi lu pikirin. Gue masukin dulu ke inbox, lalu gue pahami konteksnya." }]);
+  const [messages, setMessages] = useState<ChatMessage[]>([{ role: "assistant", content: "Halo bro 👋 Gue Alvin. Tulis aja apa yang lagi lu pikirin. Semua masuk inbox dulu, lalu gue pahami konteksnya." }]);
 
   async function loadItems() {
     if (!supabase) return;
@@ -36,30 +41,78 @@ export default function App() {
     supabase?.auth.getUser().then(({ data }) => setEmail(data.user?.email ?? null));
   }, []);
 
+  async function executeActions(userId: string, itemId: string, actions: any[]) {
+    if (!supabase || !actions?.length) return;
+    const created: string[] = [];
+    for (const action of actions) {
+      const type = String(action?.type ?? "");
+      const title = titleFrom(String(action?.title ?? "")) || "Tanpa judul";
+      const description = String(action?.description ?? "");
+      if (type === "note") {
+        const { data } = await supabase.from("notes").insert({ user_id: userId, title, content: description || title }).select("id").single();
+        if (data?.id) created.push(`note:${data.id}`);
+      } else if (type === "idea") {
+        const { data } = await supabase.from("ideas").insert({ user_id: userId, title, description: description || title }).select("id").single();
+        if (data?.id) created.push(`idea:${data.id}`);
+      } else if (type === "task") {
+        const due = action?.due_at ? String(action.due_at) : null;
+        const priority = ["low", "medium", "high"].includes(String(action?.priority)) ? String(action.priority) : "medium";
+        const { data } = await supabase.from("tasks").insert({ user_id: userId, title, description: description || title, due_at: due, priority }).select("id").single();
+        if (data?.id) created.push(`task:${data.id}`);
+      } else if (type === "finance") {
+        const amount = Number(action?.amount);
+        const txType = action?.transaction_type === "income" ? "income" : action?.transaction_type === "expense" ? "expense" : null;
+        if (Number.isFinite(amount) && amount > 0 && txType) {
+          const { data } = await supabase.from("transactions").insert({ user_id: userId, account_id: null, type: txType, amount, category: String(action?.category || "other"), description: description || title }).select("id").single();
+          if (data?.id) created.push(`finance:${data.id}`);
+        }
+      }
+    }
+    await supabase.from("items").update({
+      item_type: actions[0]?.type === "finance" ? "finance" : String(actions[0]?.type || "inbox"),
+      status: created.length ? "processed" : "pending",
+      ai_confidence: null,
+      ai_reason: null,
+      metadata: { actions, created },
+      processed_at: created.length ? new Date().toISOString() : null
+    }).eq("id", itemId).eq("user_id", userId);
+    await loadItems();
+  }
+
   async function sendMessage() {
     const text = input.trim();
     if (!text || sending) return;
-    setInput(""); setMessages(m => [...m, { role: "user", content: text }]); setSending(true);
+    setInput("");
+    setMessages(m => [...m, { role: "user", content: text }]);
+    setSending(true);
+    let itemId: string | null = null;
     const userId = supabase ? (await supabase.auth.getUser()).data.user?.id ?? null : null;
+
     if (supabase && userId) {
-      await supabase.from("items").insert({ user_id: userId, content: text, item_type: "inbox", status: "pending", source: "chat" });
+      const { data } = await supabase.from("items").insert({ user_id: userId, content: text, item_type: "inbox", status: "pending", source: "chat" }).select("id").single();
+      itemId = data?.id ?? null;
       await loadItems();
     }
+
     try {
       const r = await fetch("/api/alvin-chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
       if (!r.ok) throw new Error("API unavailable");
       const data = await r.json();
+      if (userId && itemId && Array.isArray(data.actions) && data.actions.length) await executeActions(userId, itemId, data.actions);
+      else if (supabase && userId && itemId) await supabase.from("items").update({ item_type: data.classification || "inbox", ai_confidence: Number(data.confidence ?? 0), ai_reason: String(data.reason ?? ""), metadata: { actions: data.actions || [] } }).eq("id", itemId).eq("user_id", userId);
       setMessages(m => [...m, { role: "assistant", content: data.reply ?? "Oke, gue proses." }]);
     } catch {
       setMessages(m => [...m, { role: "assistant", content: classify(text) }]);
-    } finally { setSending(false); }
+    } finally {
+      setSending(false);
+    }
   }
 
   function classify(text: string) {
     const t = text.toLowerCase();
-    if (/(rb|ribu|rp|rupiah|bayar|beli|belanja|harga|duit|uang)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Finance. Nanti AI bisa mengekstrak nominal dan kategori.";
-    if (/(besok|nanti|harus|deadline|kerjain|kerjakan|ingatkan|jangan lupa)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Task.";
-    if (/(kepikiran|ide|gimana kalau|kayaknya bisa|rencana bisnis)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Idea.";
+    if (/(rb|ribu|rp|rupiah|bayar|beli|belanja|harga|duit|uang)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Finance, tapi AI belum bisa memproses otomatis sekarang.";
+    if (/(besok|nanti|harus|deadline|kerjain|kerjakan|ingatkan|jangan lupa)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Task, tapi AI belum bisa memproses otomatis sekarang.";
+    if (/(kepikiran|ide|gimana kalau|kayaknya bisa|rencana bisnis)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Idea, tapi AI belum bisa memproses otomatis sekarang.";
     return "Sudah gue masukin ke inbox. Alvin akan memahami konteksnya dulu sebelum menentukan kategori.";
   }
 
