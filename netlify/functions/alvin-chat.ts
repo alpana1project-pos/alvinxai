@@ -26,7 +26,7 @@ async function ask(key: string, model: string, contextText: string, message: str
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + key },
     body: JSON.stringify({
       model,
-      temperature: 0.35,
+      temperature: 0.25,
       max_tokens: 1400,
       response_format: { type: "json_object" },
       messages: [
@@ -45,22 +45,20 @@ export default async (req: Request, _context: Context) => {
   const body = await req.json().catch(() => ({}));
   const message = String(body.message ?? "").trim();
   if (!message) return Response.json({ error: "message required" }, { status: 400 });
-  if (!key) return Response.json(fallback("AI Alvin belum terhubung. Coba pasang AI_API_KEY di Netlify.", "AI_API_KEY belum dikonfigurasi"));
+  if (!key) return Response.json(fallback("AI Alvin belum terhubung. Coba pasang AI_API_KEY di Netlify.", "AI_API_KEY belum dikonfigurasi"), { status: 500 });
 
   const contextText = JSON.stringify(body.context && typeof body.context === "object" ? body.context : {}).slice(0, 14000);
   try {
-    // Use the very fast 8B model first. If unavailable, retry with 70B.
-    let result = await ask(key, "llama-3.1-8b-instant", contextText, message);
-    if (!result.r.ok && [403, 404, 429, 500, 502, 503].includes(result.r.status)) {
-      result = await ask(key, "llama-3.3-70b-versatile", contextText, message);
-    }
+    // GPT-OSS 20B is available on Groq's current Free Plan limits and is used here instead of the older Enterprise Llama models.
+    const result = await ask(key, "openai/gpt-oss-20b", contextText, message);
     if (!result.r.ok) {
-      const detail = String(result.data?.error?.message || "provider error").slice(0, 180);
-      return Response.json(fallback("Bro, koneksi ke provider AI lagi bermasalah. Coba lagi sebentar.", `Groq ${result.r.status}: ${detail}`), { status: 502 });
+      const detail = String(result.data?.error?.message || "provider error").slice(0, 220);
+      const reason = `Groq ${result.r.status}: ${detail}`;
+      const reply = result.r.status === 401 ? "API key Alvin ditolak provider. Ganti AI_API_KEY di Netlify." : result.r.status === 403 ? "Model AI ditolak oleh permission akun Groq. Coba cek akses model di Groq." : result.r.status === 429 ? "Batas request Groq sedang kena. Tunggu sebentar lalu coba lagi." : result.r.status === 402 ? "Akun provider AI membutuhkan billing/credits untuk request ini." : "Provider AI sedang bermasalah. Coba lagi sebentar.";
+      return Response.json(fallback(reply, reason), { status: 502 });
     }
-
     const parsed = parseJson(result.data?.choices?.[0]?.message?.content || "");
-    if (!parsed || typeof parsed !== "object") return Response.json(fallback("Gue belum bisa memproses jawaban itu dengan benar.", "Invalid model JSON"));
+    if (!parsed || typeof parsed !== "object") return Response.json(fallback("Gue belum bisa memproses jawaban itu dengan benar.", "Invalid model JSON"), { status: 502 });
     const allowed = ["task", "note", "idea", "finance", "other", "inbox"];
     const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
     return Response.json({
