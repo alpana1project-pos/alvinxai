@@ -9,7 +9,7 @@ PERSONAL WORKSPACE:
 The app may also store every user message as a raw item. This does NOT mean every message should be announced as an inbox action. Only create workspace actions when the message actually contains something that should be saved or recorded.
 
 BEHAVIOR:
-- Always provide a useful answer in `reply`.
+- Always provide a useful answer in the reply field.
 - For greetings and casual conversation, simply respond naturally. Never say the message was put into the inbox unless the user asked to save it.
 - Match the user's Indonesian/casual style when appropriate.
 - Use recent conversation/workspace context for follow-ups such as "yang tadi", "itu", "lanjut", and similar references.
@@ -49,15 +49,15 @@ Return ONLY valid JSON with this exact shape:
 }
 
 EXAMPLES:
-"Halo Alvin" => friendly greeting, actions: []
-"Lu bisa ngapain?" => explain capabilities, actions: []
-"Jelasin API itu apa" => explain it clearly, actions: []
-"Bantu bikin roadmap belajar coding" => provide a roadmap, actions: []
-"Gua kepikiran buka toko online" => discuss/help with the idea and save an idea action.
-"Tolong catat meeting sama Andi jam 3" => confirm naturally and save a note action.
-"Besok gue harus bayar listrik" => acknowledge and create a task action.
-"Tadi gue beli nasi goreng 20 ribu" => acknowledge and create a finance expense action for 20000/food.
-"Gajian 5 juta" => acknowledge and create a finance income action for 5000000/salary.`;
+Halo Alvin => friendly greeting, actions: []
+Lu bisa ngapain? => explain capabilities, actions: []
+Jelasin API itu apa => explain it clearly, actions: []
+Bantu bikin roadmap belajar coding => provide a roadmap, actions: []
+Gua kepikiran buka toko online => discuss/help with the idea and save an idea action.
+Tolong catat meeting sama Andi jam 3 => confirm naturally and save a note action.
+Besok gue harus bayar listrik => acknowledge and create a task action.
+Tadi gue beli nasi goreng 20 ribu => acknowledge and create a finance expense action for 20000/food.
+Gajian 5 juta => acknowledge and create a finance income action for 5000000/salary.`;
 
 const fallback = (reply: string, reason = "Model response could not be parsed") => ({
   reply,
@@ -70,7 +70,7 @@ const fallback = (reply: string, reason = "Model response could not be parsed") 
 function parseModelJson(raw: string) {
   const text = String(raw || "").trim();
   try { return JSON.parse(text); } catch {}
-  const unfenced = text.replace(/^```json\\s*/i, "").replace(/\\s*```$/i, "");
+  const unfenced = text.replace(/^```json\s*/i, "").replace(/\s*```$/i, "");
   try { return JSON.parse(unfenced); } catch {}
   const start = unfenced.indexOf("{");
   const end = unfenced.lastIndexOf("}");
