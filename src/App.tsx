@@ -1,156 +1,84 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, CheckCircle2, ChevronRight, CircleDollarSign, FileText, Lightbulb, ListTodo, Menu, Mic, Plus, Send, Settings, Sparkles, Wallet, X } from "lucide-react";
+import { Bot, Check, CheckCircle2, ChevronRight, CircleDollarSign, FileText, Lightbulb, ListTodo, LogOut, Menu, Mic, Plus, Send, Settings, Sparkles, Wallet } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import type { ChatMessage, Item, Section } from "./lib/types";
+import AuthScreen from "./components/AuthScreen";
 
+type Action = { type: "task" | "note" | "idea" | "finance"; title?: string; description?: string; amount?: number; transaction_type?: "income" | "expense" | null; category?: string | null; due_at?: string | null; priority?: "low" | "medium" | "high" };
+type RecordRow = { id: string; title: string; description?: string; amount?: number; type?: string; completed?: boolean; due_at?: string | null; priority?: string; created_at?: string };
 const nav: { id: Section; label: string; icon: any }[] = [
-  { id: "overview", label: "Overview", icon: Sparkles },
-  { id: "alvin", label: "Alvin", icon: Bot },
-  { id: "finance", label: "Finance", icon: Wallet },
-  { id: "ideas", label: "Ideas", icon: Lightbulb },
-  { id: "notes", label: "Notes", icon: FileText },
-  { id: "tasks", label: "Tasks", icon: ListTodo },
+  { id: "overview", label: "Overview", icon: Sparkles }, { id: "alvin", label: "Alvin", icon: Bot }, { id: "finance", label: "Finance", icon: Wallet }, { id: "ideas", label: "Ideas", icon: Lightbulb }, { id: "notes", label: "Notes", icon: FileText }, { id: "tasks", label: "Tasks", icon: ListTodo },
 ];
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
-}
-
-function titleFrom(text: string) {
-  const clean = text.replace(/^\s*(catat|ingat|todo|ide)\s*[:,-]?\s*/i, "").trim();
-  return clean.length > 70 ? `${clean.slice(0, 67)}...` : clean;
-}
+function formatDate(value?: string | null) { return value ? new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value)) : "-"; }
+function titleFrom(text: string) { const clean = text.replace(/^\s*(catat|ingat|todo|ide)\s*[:,-]?\s*/i, "").trim(); return clean.length > 70 ? `${clean.slice(0, 67)}...` : clean; }
+function formatMoney(n: number) { return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(n); }
 
 export default function App() {
-  const [section, setSection] = useState<Section>("overview");
-  const [items, setItems] = useState<Item[]>([]);
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [email, setEmail] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([{ role: "assistant", content: "Halo bro 👋 Gue Alvin. Tulis aja apa yang lagi lu pikirin. Semua masuk inbox dulu, lalu gue pahami konteksnya." }]);
+  const [userId, setUserId] = useState<string | null>(null); const [email, setEmail] = useState<string | null>(null); const [authReady, setAuthReady] = useState(false);
+  useEffect(() => { if (!supabase) { setAuthReady(true); return; } supabase.auth.getSession().then(({ data }) => { setUserId(data.session?.user.id ?? null); setEmail(data.session?.user.email ?? null); setAuthReady(true); }); const { data } = supabase.auth.onAuthStateChange((_e, session) => { setUserId(session?.user.id ?? null); setEmail(session?.user.email ?? null); }); return () => data.subscription.unsubscribe(); }, []);
+  if (!authReady) return <div className="loading-screen"><Bot size={26}/><span>Menyiapkan Alvin...</span></div>;
+  if (!userId) return <AuthScreen />;
+  return <Workspace userId={userId} email={email} />;
+}
 
-  async function loadItems() {
+function Workspace({ userId, email }: { userId: string; email: string | null }) {
+  const [section, setSection] = useState<Section>("overview"); const [items, setItems] = useState<Item[]>([]); const [records, setRecords] = useState<RecordRow[]>([]);
+  const [mobileOpen, setMobileOpen] = useState(false); const [input, setInput] = useState(""); const [sending, setSending] = useState(false); const [conversationId, setConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]); const [voiceEnabled, setVoiceEnabled] = useState(true); const [wallpaper, setWallpaper] = useState("clean");
+  async function loadAll() {
     if (!supabase) return;
-    const { data } = await supabase.from("items").select("*").order("created_at", { ascending: false }).limit(100);
-    if (data) setItems(data as Item[]);
+    const [{ data: itemData }, { data: settings }, { data: notes }, { data: ideas }, { data: tasks }, { data: transactions }] = await Promise.all([
+      supabase.from("items").select("*").order("created_at", { ascending: false }).limit(100), supabase.from("user_settings").select("voice_enabled,chat_wallpaper").eq("user_id", userId).maybeSingle(),
+      supabase.from("notes").select("id,title,content,created_at").order("created_at", { ascending: false }).limit(100), supabase.from("ideas").select("id,title,description,created_at").order("created_at", { ascending: false }).limit(100), supabase.from("tasks").select("id,title,description,due_at,priority,completed,created_at").order("created_at", { ascending: false }).limit(100), supabase.from("transactions").select("id,description,amount,type,category,occurred_at,created_at").order("occurred_at", { ascending: false }).limit(100)
+    ]);
+    if (itemData) setItems(itemData as Item[]); if (settings) { setVoiceEnabled(settings.voice_enabled ?? true); setWallpaper(settings.chat_wallpaper || "clean"); }
+    if (section === "notes" && notes) setRecords(notes.map((x: any) => ({ id: x.id, title: x.title, description: x.content, created_at: x.created_at })));
+    if (section === "ideas" && ideas) setRecords(ideas.map((x: any) => ({ id: x.id, title: x.title, description: x.description, created_at: x.created_at })));
+    if (section === "tasks" && tasks) setRecords(tasks.map((x: any) => ({ id: x.id, title: x.title, description: x.description, due_at: x.due_at, priority: x.priority, completed: x.completed, created_at: x.created_at })));
+    if (section === "finance" && transactions) setRecords(transactions.map((x: any) => ({ id: x.id, title: x.description || x.category, description: x.category, amount: Number(x.amount), type: x.type, created_at: x.occurred_at || x.created_at })));
   }
-
+  useEffect(() => { loadAll(); }, [userId, section]);
   useEffect(() => {
-    loadItems();
-    supabase?.auth.getUser().then(({ data }) => setEmail(data.user?.email ?? null));
-  }, []);
-
-  async function executeActions(userId: string, itemId: string, actions: any[]) {
-    if (!supabase || !actions?.length) return;
-    const created: string[] = [];
-    for (const action of actions) {
-      const type = String(action?.type ?? "");
-      const title = titleFrom(String(action?.title ?? "")) || "Tanpa judul";
-      const description = String(action?.description ?? "");
-      if (type === "note") {
-        const { data } = await supabase.from("notes").insert({ user_id: userId, title, content: description || title }).select("id").single();
-        if (data?.id) created.push(`note:${data.id}`);
-      } else if (type === "idea") {
-        const { data } = await supabase.from("ideas").insert({ user_id: userId, title, description: description || title }).select("id").single();
-        if (data?.id) created.push(`idea:${data.id}`);
-      } else if (type === "task") {
-        const due = action?.due_at ? String(action.due_at) : null;
-        const priority = ["low", "medium", "high"].includes(String(action?.priority)) ? String(action.priority) : "medium";
-        const { data } = await supabase.from("tasks").insert({ user_id: userId, title, description: description || title, due_at: due, priority }).select("id").single();
-        if (data?.id) created.push(`task:${data.id}`);
-      } else if (type === "finance") {
-        const amount = Number(action?.amount);
-        const txType = action?.transaction_type === "income" ? "income" : action?.transaction_type === "expense" ? "expense" : null;
-        if (Number.isFinite(amount) && amount > 0 && txType) {
-          const { data } = await supabase.from("transactions").insert({ user_id: userId, account_id: null, type: txType, amount, category: String(action?.category || "other"), description: description || title }).select("id").single();
-          if (data?.id) created.push(`finance:${data.id}`);
-        }
-      }
+    if (!supabase) return; let alive = true;
+    (async () => { let { data: conv } = await supabase.from("conversations").select("id").eq("user_id", userId).order("updated_at", { ascending: false }).limit(1).maybeSingle(); if (!conv) { const created = await supabase.from("conversations").insert({ user_id: userId, title: "Chat dengan Alvin" }).select("id").single(); conv = created.data; } if (!alive || !conv?.id) return; setConversationId(conv.id); const { data } = await supabase.from("messages").select("role,content").eq("conversation_id", conv.id).order("created_at", { ascending: true }).limit(100); if (data?.length) setMessages(data.filter((m: any) => m.role === "user" || m.role === "assistant") as ChatMessage[]); else setMessages([{ role: "assistant", content: "Halo bro 👋 Gue Alvin. Tulis aja apa yang lagi lu pikirin. Semua masuk inbox dulu, lalu gue pahami konteksnya." }]); })(); return () => { alive = false; };
+  }, [userId]);
+  async function executeActions(itemId: string, actions: Action[], confidence: number, reason: string) {
+    if (!supabase || !actions?.length) return; const created: string[] = [];
+    for (const action of actions) { const type = String(action?.type ?? ""); const title = titleFrom(String(action?.title ?? "")) || "Tanpa judul"; const description = String(action?.description ?? "");
+      if (type === "note") { const { data } = await supabase.from("notes").insert({ user_id: userId, title, content: description || title }).select("id").single(); if (data?.id) created.push(`note:${data.id}`); }
+      else if (type === "idea") { const { data } = await supabase.from("ideas").insert({ user_id: userId, title, description: description || title }).select("id").single(); if (data?.id) created.push(`idea:${data.id}`); }
+      else if (type === "task") { const due = action.due_at ? String(action.due_at) : null; const priority = ["low", "medium", "high"].includes(String(action.priority)) ? String(action.priority) : "medium"; const { data } = await supabase.from("tasks").insert({ user_id: userId, title, description: description || title, due_at: due, priority }).select("id").single(); if (data?.id) created.push(`task:${data.id}`); }
+      else if (type === "finance") { const amount = Number(action.amount); const txType = action.transaction_type === "income" || action.transaction_type === "expense" ? action.transaction_type : null; if (Number.isFinite(amount) && amount > 0 && txType) { const { data } = await supabase.from("transactions").insert({ user_id: userId, account_id: null, type: txType, amount, category: action.category || "other", description: description || title }).select("id").single(); if (data?.id) created.push(`finance:${data.id}`); } }
     }
-    await supabase.from("items").update({
-      item_type: actions[0]?.type === "finance" ? "finance" : String(actions[0]?.type || "inbox"),
-      status: created.length ? "processed" : "pending",
-      ai_confidence: null,
-      ai_reason: null,
-      metadata: { actions, created },
-      processed_at: created.length ? new Date().toISOString() : null
-    }).eq("id", itemId).eq("user_id", userId);
-    await loadItems();
+    await supabase.from("items").update({ item_type: actions[0]?.type || "inbox", status: created.length ? "processed" : "pending", ai_confidence: confidence || null, ai_reason: reason || null, metadata: { actions, created }, processed_at: created.length ? new Date().toISOString() : null }).eq("id", itemId).eq("user_id", userId); await loadAll();
   }
-
   async function sendMessage() {
-    const text = input.trim();
-    if (!text || sending) return;
-    setInput("");
-    setMessages(m => [...m, { role: "user", content: text }]);
-    setSending(true);
-    let itemId: string | null = null;
-    const userId = supabase ? (await supabase.auth.getUser()).data.user?.id ?? null : null;
-
-    if (supabase && userId) {
-      const { data } = await supabase.from("items").insert({ user_id: userId, content: text, item_type: "inbox", status: "pending", source: "chat" }).select("id").single();
-      itemId = data?.id ?? null;
-      await loadItems();
-    }
-
+    const text = input.trim(); if (!text || sending || !supabase) return; setInput(""); setSending(true); setMessages(m => [...m, { role: "user", content: text }]);
+    const { data: item } = await supabase.from("items").insert({ user_id: userId, content: text, item_type: "inbox", status: "pending", source: "chat" }).select("id").single();
+    if (conversationId) await supabase.from("messages").insert({ conversation_id: conversationId, user_id: userId, role: "user", content: text });
     try {
-      const r = await fetch("/api/alvin-chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
-      if (!r.ok) throw new Error("API unavailable");
-      const data = await r.json();
-      if (userId && itemId && Array.isArray(data.actions) && data.actions.length) await executeActions(userId, itemId, data.actions);
-      else if (supabase && userId && itemId) await supabase.from("items").update({ item_type: data.classification || "inbox", ai_confidence: Number(data.confidence ?? 0), ai_reason: String(data.reason ?? ""), metadata: { actions: data.actions || [] } }).eq("id", itemId).eq("user_id", userId);
-      setMessages(m => [...m, { role: "assistant", content: data.reply ?? "Oke, gue proses." }]);
-    } catch {
-      setMessages(m => [...m, { role: "assistant", content: classify(text) }]);
-    } finally {
-      setSending(false);
-    }
+      const context = { recent_messages: messages.slice(-8), recent_items: items.slice(0, 12).map(i => ({ content: i.content, item_type: i.item_type, status: i.status, created_at: i.created_at })) };
+      const r = await fetch("/api/alvin-chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text, context }) }); if (!r.ok) throw new Error("API unavailable"); const data = await r.json(); const reply = data.reply ?? "Oke, gue proses.";
+      if (conversationId) { await supabase.from("messages").insert({ conversation_id: conversationId, user_id: userId, role: "assistant", content: reply }); await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conversationId).eq("user_id", userId); }
+      setMessages(m => [...m, { role: "assistant", content: reply }]); if (voiceEnabled && "speechSynthesis" in window) { window.speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(reply); u.lang = "id-ID"; u.rate = 1.02; window.speechSynthesis.speak(u); }
+      if (item?.id && Array.isArray(data.actions) && data.actions.length) await executeActions(item.id, data.actions, Number(data.confidence || 0), String(data.reason || "")); else if (item?.id) await supabase.from("items").update({ item_type: data.classification || "inbox", ai_confidence: Number(data.confidence || 0), ai_reason: String(data.reason || ""), metadata: { actions: data.actions || [] } }).eq("id", item.id).eq("user_id", userId);
+      await loadAll();
+    } catch { const reply = classify(text); setMessages(m => [...m, { role: "assistant", content: reply }]); if (conversationId) await supabase.from("messages").insert({ conversation_id: conversationId, user_id: userId, role: "assistant", content: reply }); }
+    finally { setSending(false); }
   }
-
-  function classify(text: string) {
-    const t = text.toLowerCase();
-    if (/(rb|ribu|rp|rupiah|bayar|beli|belanja|harga|duit|uang)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Finance, tapi AI belum bisa memproses otomatis sekarang.";
-    if (/(besok|nanti|harus|deadline|kerjain|kerjakan|ingatkan|jangan lupa)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Task, tapi AI belum bisa memproses otomatis sekarang.";
-    if (/(kepikiran|ide|gimana kalau|kayaknya bisa|rencana bisnis)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Idea, tapi AI belum bisa memproses otomatis sekarang.";
-    return "Sudah gue masukin ke inbox. Alvin akan memahami konteksnya dulu sebelum menentukan kategori.";
-  }
-
-  async function logout() { await supabase?.auth.signOut(); setEmail(null); }
+  function classify(text: string) { const t = text.toLowerCase(); if (/(rb|ribu|rp|rupiah|bayar|beli|belanja|harga|duit|uang)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Finance, tapi AI belum bisa memproses otomatis sekarang."; if (/(besok|nanti|harus|deadline|kerjain|kerjakan|ingatkan|jangan lupa)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Task, tapi AI belum bisa memproses otomatis sekarang."; if (/(kepikiran|ide|gimana kalau|kayaknya bisa|rencana bisnis)/.test(t)) return "Masuk inbox dulu. Ini kelihatannya Idea, tapi AI belum bisa memproses otomatis sekarang."; return "Sudah gue masukin ke inbox. Alvin akan memahami konteksnya dulu sebelum menentukan kategori."; }
+  async function logout() { await supabase?.auth.signOut(); }
+  async function toggleTask(id: string, completed: boolean) { if (!supabase) return; await supabase.from("tasks").update({ completed: !completed }).eq("id", id).eq("user_id", userId); await loadAll(); }
+  async function saveSetting(key: "voice_enabled" | "chat_wallpaper", value: any) { if (!supabase) return; await supabase.from("user_settings").upsert({ user_id: userId, [key]: value, updated_at: new Date().toISOString() }); }
   const counts = useMemo(() => ({ all: items.length, pending: items.filter(x => x.status === "pending").length, tasks: items.filter(x => x.item_type === "task").length, notes: items.filter(x => x.item_type === "note").length, ideas: items.filter(x => x.item_type === "idea").length, finance: items.filter(x => x.item_type === "finance").length }), [items]);
-
-  const collectionType = section === "finance" ? "finance" : section === "ideas" ? "idea" : section === "notes" ? "note" : section === "tasks" ? "task" : "";
-  const content = section === "overview" ? <Overview counts={counts} items={items} go={setSection} /> : section === "alvin" ? <Chat messages={messages} input={input} setInput={setInput} send={sendMessage} sending={sending} /> : section === "settings" ? <SettingsPanel email={email} logout={logout} /> : <Collection title={section[0].toUpperCase() + section.slice(1)} items={items.filter(x => x.item_type === collectionType)} />;
-
-  return <div className="app-shell">
-    <aside className={`sidebar ${mobileOpen ? "open" : ""}`}>
-      <div className="brand"><div className="brand-mark"><Bot size={21}/></div><div><b>Alvin</b><span>AI Assistant</span></div></div>
-      <div className="nav-label">WORKSPACE</div>
-      <nav>{nav.map(n => { const I = n.icon; return <button key={n.id} className={section === n.id ? "active" : ""} onClick={() => { setSection(n.id); setMobileOpen(false); }}><I size={18}/><span>{n.label}</span></button>; })}</nav>
-      <div className="sidebar-bottom"><button className={section === "settings" ? "active" : ""} onClick={() => setSection("settings")}><Settings size={18}/><span>Settings</span></button><small>{email || "Local demo mode"}</small></div>
-    </aside>
-    {mobileOpen && <div className="backdrop" onClick={() => setMobileOpen(false)} />}
-    <main className="main"><header className="topbar"><button className="icon-btn mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={20}/></button><div><div className="eyebrow">PERSONAL COMMAND CENTER</div><h1>{section === "alvin" ? "Talk to Alvin" : section === "overview" ? "Good to see you." : section[0].toUpperCase() + section.slice(1)}</h1></div><div className="avatar"><Bot size={19}/></div></header><div className="page">{content}</div></main>
-  </div>;
+  const content = section === "overview" ? <Overview counts={counts} items={items} go={setSection} /> : section === "alvin" ? <Chat messages={messages} input={input} setInput={setInput} send={sendMessage} sending={sending} wallpaper={wallpaper} /> : section === "settings" ? <SettingsPanel email={email} logout={logout} voiceEnabled={voiceEnabled} setVoice={(v: boolean) => { setVoiceEnabled(v); saveSetting("voice_enabled", v); }} wallpaper={wallpaper} setWallpaper={(v: string) => { setWallpaper(v); saveSetting("chat_wallpaper", v); }} /> : <Collection title={section[0].toUpperCase() + section.slice(1)} records={records} type={section} toggleTask={toggleTask} />;
+  return <div className="app-shell"><aside className={`sidebar ${mobileOpen ? "open" : ""}`}><div className="brand"><div className="brand-mark"><Bot size={21}/></div><div><b>Alvin</b><span>AI Assistant</span></div></div><div className="nav-label">WORKSPACE</div><nav>{nav.map(n => { const I = n.icon; return <button key={n.id} className={section === n.id ? "active" : ""} onClick={() => { setSection(n.id); setMobileOpen(false); }}><I size={18}/><span>{n.label}</span></button>; })}</nav><div className="sidebar-bottom"><button className={section === "settings" ? "active" : ""} onClick={() => setSection("settings")}><Settings size={18}/><span>Settings</span></button><small>{email}</small></div></aside>{mobileOpen && <div className="backdrop" onClick={() => setMobileOpen(false)} />}<main className="main"><header className="topbar"><button className="icon-btn mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={20}/></button><div><div className="eyebrow">PERSONAL COMMAND CENTER</div><h1>{section === "alvin" ? "Talk to Alvin" : section === "overview" ? "Good to see you." : section[0].toUpperCase() + section.slice(1)}</h1></div><div className="avatar"><Bot size={19}/></div></header><div className="page">{content}</div></main></div>;
 }
-
-function Overview({ counts, items, go }: { counts: any; items: Item[]; go: (s: Section) => void }) {
-  return <div className="stack"><section className="hero-card"><div><div className="pill"><Sparkles size={14}/> Context-aware inbox</div><h2>Tuangin aja isi kepala lu.</h2><p>Semua input masuk dulu sebagai item mentah. Alvin memahami konteks lalu memilahnya ke Task, Note, Idea, atau Finance.</p><button className="primary" onClick={() => go("alvin")}>Mulai ngobrol <ChevronRight size={17}/></button></div><div className="hero-orb"><Bot size={70}/></div></section><div className="stat-grid"><Stat label="Inbox" value={counts.all} icon={Sparkles}/><Stat label="Pending" value={counts.pending} icon={CheckCircle2}/><Stat label="Tasks" value={counts.tasks} icon={ListTodo}/><Stat label="Finance" value={counts.finance} icon={CircleDollarSign}/></div><section className="panel"><div className="panel-head"><div><h3>Recent items</h3><p>Input mentah tetap tersimpan sebagai konteks.</p></div><button className="ghost" onClick={() => go("alvin")}><Plus size={16}/> Add</button></div>{items.length ? <div className="items">{items.slice(0,8).map(i => <ItemRow key={i.id} item={i}/>)}</div> : <Empty/>}</section></div>;
-}
+function Overview({ counts, items, go }: { counts: any; items: Item[]; go: (s: Section) => void }) { return <div className="stack"><section className="hero-card"><div><div className="pill"><Sparkles size={14}/> Inbox-first intelligence</div><h2>Tuangin aja isi kepala lu.</h2><p>Semua input masuk sebagai data mentah. Alvin memahami konteks lalu bisa membuat Task, Note, Idea, atau Finance tanpa menghapus sumber aslinya.</p><button className="primary" onClick={() => go("alvin")}>Mulai ngobrol <ChevronRight size={17}/></button></div><div className="hero-orb"><Bot size={70}/></div></section><div className="stat-grid"><Stat label="Inbox" value={counts.all} icon={Sparkles}/><Stat label="Pending" value={counts.pending} icon={CheckCircle2}/><Stat label="Tasks" value={counts.tasks} icon={ListTodo}/><Stat label="Finance" value={counts.finance} icon={CircleDollarSign}/></div><section className="panel"><div className="panel-head"><div><h3>Recent items</h3><p>Input mentah tetap tersimpan sebagai konteks.</p></div><button className="ghost" onClick={() => go("alvin")}><Plus size={16}/> Add</button></div>{items.length ? <div className="items">{items.slice(0,8).map(i => <ItemRow key={i.id} item={i}/>)}</div> : <Empty/>}</section></div>; }
 function Stat({ label, value, icon: I }: any) { return <div className="stat"><div className="stat-icon"><I size={18}/></div><div><b>{value}</b><span>{label}</span></div></div>; }
-function ItemRow({ item }: { item: Item }) { return <div className="item-row"><div className={`type-dot ${item.item_type}`}/><div className="item-main"><b>{item.content}</b><span>{formatDate(item.created_at)} · {item.item_type}</span></div><span className={`badge ${item.status}`}>{item.status}</span></div>; }
-function Collection({ title, items }: { title: string; items: Item[] }) { return <section className="panel"><div className="panel-head"><div><h3>{title}</h3><p>Data hasil pemilahan konteks Alvin.</p></div></div>{items.length ? <div className="items">{items.map(i => <ItemRow key={i.id} item={i}/>)}</div> : <Empty/>}</section>; }
+function ItemRow({ item }: { item: Item }) { return <div className="item-row"><div className={`type-dot ${item.item_type}`}/><div className="item-main"><b>{item.content}</b><span>{formatDate(item.created_at)} · {item.item_type} · {item.status}</span></div><span className={`badge ${item.status}`}>{item.status}</span></div>; }
+function Collection({ title, records, type, toggleTask }: { title: string; records: RecordRow[]; type: Section; toggleTask: (id: string, completed: boolean) => void }) { return <section className="panel"><div className="panel-head"><div><h3>{title}</h3><p>Data hasil pemilahan konteks Alvin.</p></div></div>{records.length ? <div className="record-grid">{records.map(r => <div className="record-card" key={r.id}><div className="record-top"><div className={`record-icon ${type}`}><IconFor type={type}/></div>{type === "tasks" && <button className={`check-btn ${r.completed ? "done" : ""}`} onClick={() => toggleTask(r.id, !!r.completed)}>{r.completed ? <Check size={15}/> : null}</button>}{type === "finance" && <span className={`money ${r.type}`}>{r.type === "income" ? "+" : "-"}{formatMoney(r.amount || 0)}</span>}</div><b className={r.completed ? "strike" : ""}>{r.title}</b>{r.description && <p>{r.description}</p>}<small>{type === "tasks" ? `${r.priority || "medium"} · ${formatDate(r.due_at)}` : formatDate(r.created_at)}</small></div>)}</div> : <Empty/>}</section>; }
+function IconFor({ type }: { type: Section }) { if (type === "tasks") return <ListTodo size={17}/>; if (type === "notes") return <FileText size={17}/>; if (type === "ideas") return <Lightbulb size={17}/>; return <CircleDollarSign size={17}/>; }
 function Empty() { return <div className="empty"><Sparkles size={25}/><b>Belum ada data</b><span>Ngobrol dengan Alvin untuk mulai mengisi workspace.</span></div>; }
-
-function Chat({ messages, input, setInput, send, sending }: any) {
-  const [listening, setListening] = useState(false);
-  function voice() {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) return alert("Browser ini belum mendukung voice input.");
-    const r = new SR(); r.lang = "id-ID"; r.interimResults = false;
-    r.onstart = () => setListening(true); r.onend = () => setListening(false); r.onerror = () => setListening(false);
-    r.onresult = (e: any) => setInput((v: string) => `${v}${v ? " " : ""}${e.results[0][0].transcript}`); r.start();
-  }
-  return <div className="chat-layout"><section className="chat-card"><div className="chat-head"><div className="alvin-avatar"><Bot size={20}/></div><div><b>Alvin</b><span>Context-aware assistant</span></div><span className="online"/></div><div className="messages">{messages.map((m: ChatMessage, i: number) => <div key={i} className={`message ${m.role}`}><div>{m.content}</div></div>)}{sending && <div className="message assistant"><div className="typing"><i/><i/><i/></div></div>}</div><div className="composer"><button className={`icon-btn ${listening ? "recording" : ""}`} onClick={voice}><Mic size={17}/></button><textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Tulis apa aja..."/><button className="send" disabled={sending || !input.trim()} onClick={send}><Send size={17}/></button></div><div className="composer-hint">Enter untuk kirim · Shift+Enter untuk baris baru · mic untuk voice</div></section><aside className="chat-side"><div className="mini-card"><Sparkles size={18}/><b>Inbox-first</b><p>Input masuk ke items sebelum Alvin menentukan konteks.</p></div><div className="mini-card"><Bot size={18}/><b>Context aware</b><p>Satu kalimat bisa menghasilkan lebih dari satu maksud.</p></div></aside></div>;
-}
-function SettingsPanel({ email, logout }: { email: string | null; logout: () => void }) { return <section className="panel settings-grid"><div className="panel-head"><div><h3>Settings</h3><p>Pengaturan dasar Alvin.</p></div></div><div className="setting-row"><div><b>Account</b><span>{email || "Local demo mode"}</span></div></div><div className="setting-row"><div><b>Chat wallpaper</b><span>Light theme · soft blue & white</span></div></div><div className="setting-row"><div><b>Session</b><span>Keluar dari akun saat ini.</span></div><button className="ghost danger" onClick={logout}><X size={15}/> Sign out</button></div></section>; }
+function Chat({ messages, input, setInput, send, sending, wallpaper }: any) { const [listening, setListening] = useState(false); function voice() { const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition; if (!SR) return alert("Browser ini belum mendukung voice input."); const r = new SR(); r.lang = "id-ID"; r.interimResults = false; r.onstart = () => setListening(true); r.onend = () => setListening(false); r.onerror = () => setListening(false); r.onresult = (e: any) => setInput((v: string) => `${v}${v ? " " : ""}${e.results[0][0].transcript}`); r.start(); } return <div className="chat-layout"><section className={`chat-card wallpaper-${wallpaper}`}><div className="chat-head"><div className="alvin-avatar"><Bot size={20}/></div><div><b>Alvin</b><span>Context-aware assistant</span></div><span className="online"/></div><div className="messages">{messages.map((m: ChatMessage, i: number) => <div key={i} className={`message ${m.role}`}><div>{m.content}</div></div>)}{sending && <div className="message assistant"><div className="typing"><i/><i/><i/></div></div>}</div><div className="composer"><button className={`icon-btn ${listening ? "recording" : ""}`} onClick={voice}><Mic size={17}/></button><textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Tulis apa aja..."/><button className="send" disabled={sending || !input.trim()} onClick={send}><Send size={17}/></button></div><div className="composer-hint">Enter kirim · Shift+Enter baris baru · mic voice · Alvin bisa membacakan jawaban</div></section><aside className="chat-side"><div className="mini-card"><Sparkles size={18}/><b>Inbox-first</b><p>Input masuk ke items sebelum Alvin menentukan konteks.</p></div><div className="mini-card"><Bot size={18}/><b>Context aware</b><p>Riwayat chat + item terbaru dikirim sebagai konteks ke model.</p></div></aside></div>; }
+function SettingsPanel({ email, logout, voiceEnabled, setVoice, wallpaper, setWallpaper }: any) { return <section className="panel settings-grid"><div className="panel-head"><div><h3>Settings</h3><p>Pengaturan Alvin yang tersimpan per akun.</p></div></div><div className="setting-row"><div><b>Account</b><span>{email}</span></div><button className="ghost danger" onClick={logout}><LogOut size={15}/> Keluar</button></div><div className="setting-row"><div><b>Voice reply</b><span>Alvin membacakan jawaban setelah chat.</span></div><button className={`switch ${voiceEnabled ? "on" : ""}`} onClick={() => setVoice(!voiceEnabled)}><span/></button></div><div className="setting-row"><div><b>Chat wallpaper</b><span>Pilih tampilan ringan untuk ruang chat.</span></div><select value={wallpaper} onChange={e => setWallpaper(e.target.value)}><option value="clean">Clean</option><option value="soft">Soft blue</option><option value="dots">Subtle dots</option></select></div></section>; }
