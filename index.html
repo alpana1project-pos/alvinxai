@@ -15,31 +15,148 @@
         let chunks = [];
         let activeButton = null;
         let stream = null;
+        let recognition = null;
+        let liveText = "";
+        let committedText = "";
+        let isPaused = false;
+        let isStopping = false;
+        let controls = null;
 
-        const setInputText = (text) => {
-          const field = document.querySelector('textarea[placeholder="Tulis apa aja..."]') || document.querySelector('input[placeholder="Tulis apa aja..."]');
-          if (!field || !text) return;
+        const getField = () => document.querySelector('textarea[placeholder="Tulis apa aja..."]') || document.querySelector('input[placeholder="Tulis apa aja..."]');
+
+        const setInputText = (text, replace = false) => {
+          const field = getField();
+          if (!field) return;
           const proto = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
           const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-          const current = field.value?.trim();
-          setter?.call(field, current ? `${current} ${text}` : text);
+          const value = replace ? text : ((field.value?.trim() ? `${field.value.trim()} ` : "") + text);
+          setter?.call(field, value);
           field.dispatchEvent(new Event("input", { bubbles: true }));
           field.focus();
         };
 
-        const stopRecording = () => {
-          if (recorder && recorder.state !== "inactive") recorder.stop();
-          if (stream) stream.getTracks().forEach((track) => track.stop());
-          stream = null;
-          if (activeButton) {
-            activeButton.title = "Rekam suara";
-            activeButton.setAttribute("aria-label", "Rekam suara");
+        const setLiveInput = () => {
+          const field = getField();
+          if (!field) return;
+          const proto = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+          setter?.call(field, committedText + (liveText ? (committedText ? " " : "") + liveText : ""));
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+          field.focus();
+        };
+
+        const removeControls = () => {
+          controls?.remove();
+          controls = null;
+        };
+
+        const setButtonState = (recording) => {
+          if (!activeButton) return;
+          activeButton.title = recording ? (isPaused ? "Lanjutkan rekaman" : "Jeda rekaman") : "Rekam suara";
+          activeButton.setAttribute("aria-label", recording ? (isPaused ? "Lanjutkan rekaman" : "Jeda rekaman") : "Rekam suara");
+        };
+
+        const makeControls = () => {
+          removeControls();
+          const bar = document.createElement("div");
+          bar.setAttribute("data-alvin-voice-controls", "true");
+          Object.assign(bar.style, {
+            position: "fixed", left: "50%", bottom: "92px", transform: "translateX(-50%)", zIndex: "99999",
+            display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderRadius: "18px",
+            background: "rgba(255,255,255,.97)", border: "1px solid rgba(59,130,246,.18)",
+            boxShadow: "0 12px 35px rgba(30,64,175,.18)", fontFamily: "system-ui,-apple-system,sans-serif"
+          });
+
+          const status = document.createElement("span");
+          status.style.cssText = "font-size:13px;font-weight:700;color:#334155;min-width:112px;text-align:center";
+          status.textContent = "● Merekam...";
+
+          const pause = document.createElement("button");
+          pause.type = "button";
+          pause.textContent = "Jeda";
+          pause.style.cssText = "border:0;border-radius:12px;padding:9px 13px;background:#eef4ff;color:#2563eb;font-weight:700";
+          pause.onclick = () => togglePause(status, pause);
+
+          const stop = document.createElement("button");
+          stop.type = "button";
+          stop.textContent = "Selesai";
+          stop.style.cssText = "border:0;border-radius:12px;padding:9px 13px;background:#3b82f6;color:#fff;font-weight:700";
+          stop.onclick = () => finishVoice();
+
+          bar.append(status, pause, stop);
+          document.body.appendChild(bar);
+          controls = bar;
+        };
+
+        const togglePause = (status, pause) => {
+          if (!recognition) return;
+          isPaused = !isPaused;
+          if (isPaused) {
+            try { recognition.stop(); } catch {}
+            status.textContent = "Ⅱ Dijeda";
+            pause.textContent = "Lanjut";
+            setButtonState(true);
+          } else {
+            status.textContent = "● Merekam...";
+            pause.textContent = "Jeda";
+            setButtonState(true);
+            try { recognition.start(); } catch {}
           }
         };
 
-        const startRecording = async (button) => {
+        const finishVoice = () => {
+          isStopping = true;
+          isPaused = false;
+          if (recognition) { try { recognition.stop(); } catch {} }
+          if (recorder && recorder.state !== "inactive") recorder.stop();
+          if (stream) stream.getTracks().forEach((track) => track.stop());
+          stream = null;
+          removeControls();
+          setButtonState(false);
+          activeButton = null;
+        };
+
+        const startRealtimeSpeech = (button) => {
+          const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+          if (!Speech) return false;
+          try {
+            recognition = new Speech();
+            recognition.lang = "id-ID";
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.maxAlternatives = 1;
+            recognition.onresult = (event) => {
+              let interim = "";
+              for (let i = event.resultIndex; i < event.results.length; i++) {
+                const text = event.results[i][0]?.transcript?.trim() || "";
+                if (event.results[i].isFinal) committedText = `${committedText}${committedText ? " " : ""}${text}`.trim();
+                else interim += text;
+              }
+              liveText = interim;
+              setLiveInput();
+            };
+            recognition.onerror = (event) => {
+              if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+                alert("Izin mikrofon ditolak. Izinkan mikrofon untuk Alvin lalu coba lagi.");
+                finishVoice();
+              }
+            };
+            recognition.onend = () => {
+              if (!isStopping && !isPaused && recognition) {
+                try { recognition.start(); } catch {}
+              }
+            };
+            recognition.start();
+            return true;
+          } catch {
+            recognition = null;
+            return false;
+          }
+        };
+
+        const startFallbackRecorder = async (button) => {
           if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-            alert("Browser ini tidak mendukung perekaman suara. Coba Chrome versi terbaru.");
+            alert("Browser ini tidak mendukung voice input.");
             return;
           }
           try {
@@ -47,11 +164,7 @@
             const preferred = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
             recorder = preferred ? new MediaRecorder(stream, { mimeType: preferred }) : new MediaRecorder(stream);
             chunks = [];
-            activeButton = button;
-            button.title = "Sedang merekam — tap lagi untuk berhenti";
-            button.setAttribute("aria-label", "Berhenti merekam");
             recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
-            recorder.onerror = () => stopRecording();
             recorder.onstop = async () => {
               const blob = new Blob(chunks, { type: recorder?.mimeType || "audio/webm" });
               recorder = null;
@@ -79,13 +192,30 @@
           }
         };
 
+        const startVoice = async (button) => {
+          if (recognition || (recorder && recorder.state !== "inactive")) return;
+          activeButton = button;
+          liveText = "";
+          committedText = getField()?.value?.trim() || "";
+          isPaused = false;
+          isStopping = false;
+          makeControls();
+          setButtonState(true);
+          const realtime = startRealtimeSpeech(button);
+          if (!realtime) await startFallbackRecorder(button);
+        };
+
         document.addEventListener("click", (event) => {
           const button = event.target?.closest?.("button");
           if (!button || !button.querySelector("svg.lucide-mic")) return;
           event.preventDefault();
           event.stopPropagation();
-          if (recorder && recorder.state !== "inactive") stopRecording();
-          else startRecording(button);
+          if (recognition || (recorder && recorder.state !== "inactive")) {
+            if (recognition) {
+              if (isPaused) togglePause(controls?.querySelector("span"), controls?.querySelectorAll("button")[0]);
+              else togglePause(controls?.querySelector("span"), controls?.querySelectorAll("button")[0]);
+            } else finishVoice();
+          } else startVoice(button);
         }, true);
       })();
     </script>
