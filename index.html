@@ -24,25 +24,18 @@
 
         const getField = () => document.querySelector('textarea[placeholder="Tulis apa aja..."]') || document.querySelector('input[placeholder="Tulis apa aja..."]');
 
-        const setInputText = (text, replace = false) => {
+        const setInputValue = (value) => {
           const field = getField();
           if (!field) return;
           const proto = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
           const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-          const value = replace ? text : ((field.value?.trim() ? `${field.value.trim()} ` : "") + text);
           setter?.call(field, value);
           field.dispatchEvent(new Event("input", { bubbles: true }));
           field.focus();
         };
 
         const setLiveInput = () => {
-          const field = getField();
-          if (!field) return;
-          const proto = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-          const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-          setter?.call(field, committedText + (liveText ? (committedText ? " " : "") + liveText : ""));
-          field.dispatchEvent(new Event("input", { bubbles: true }));
-          field.focus();
+          setInputValue(committedText + (liveText ? (committedText ? " " : "") + liveText : ""));
         };
 
         const removeControls = () => {
@@ -63,7 +56,7 @@
           Object.assign(bar.style, {
             position: "fixed", left: "50%", bottom: "92px", transform: "translateX(-50%)", zIndex: "99999",
             display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderRadius: "18px",
-            background: "rgba(255,255,255,.97)", border: "1px solid rgba(59,130,246,.18)",
+            background: "rgba(255,255,255,.98)", border: "1px solid rgba(59,130,246,.18)",
             boxShadow: "0 12px 35px rgba(30,64,175,.18)", fontFamily: "system-ui,-apple-system,sans-serif"
           });
 
@@ -89,18 +82,30 @@
         };
 
         const togglePause = (status, pause) => {
-          if (!recognition) return;
-          isPaused = !isPaused;
-          if (isPaused) {
-            try { recognition.stop(); } catch {}
-            status.textContent = "Ⅱ Dijeda";
-            pause.textContent = "Lanjut";
+          if (recognition) {
+            isPaused = !isPaused;
+            if (isPaused) {
+              try { recognition.stop(); } catch {}
+              status.textContent = "Ⅱ Dijeda";
+              pause.textContent = "Lanjut";
+            } else {
+              status.textContent = "● Merekam...";
+              pause.textContent = "Jeda";
+              try { recognition.start(); } catch {}
+            }
             setButtonState(true);
-          } else {
-            status.textContent = "● Merekam...";
-            pause.textContent = "Jeda";
+            return;
+          }
+
+          if (recorder) {
+            isPaused = !isPaused;
+            try {
+              if (isPaused && recorder.state === "recording") recorder.pause();
+              if (!isPaused && recorder.state === "paused") recorder.resume();
+            } catch {}
+            status.textContent = isPaused ? "Ⅱ Dijeda" : "● Merekam...";
+            pause.textContent = isPaused ? "Lanjut" : "Jeda";
             setButtonState(true);
-            try { recognition.start(); } catch {}
           }
         };
 
@@ -116,7 +121,7 @@
           activeButton = null;
         };
 
-        const startRealtimeSpeech = (button) => {
+        const startRealtimeSpeech = () => {
           const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
           if (!Speech) return false;
           try {
@@ -144,6 +149,8 @@
             recognition.onend = () => {
               if (!isStopping && !isPaused && recognition) {
                 try { recognition.start(); } catch {}
+              } else if (isStopping) {
+                recognition = null;
               }
             };
             recognition.start();
@@ -176,7 +183,8 @@
                 const response = await fetch("/api/alvin-transcribe", { method: "POST", body: form });
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(data?.error || "Transkripsi gagal");
-                setInputText(String(data?.text || ""));
+                const text = String(data?.text || "").trim();
+                if (text) setInputValue(committedText ? `${committedText} ${text}` : text);
               } catch (error) {
                 alert(error?.message || "Suara belum bisa diproses. Coba lagi.");
               } finally {
@@ -201,7 +209,7 @@
           isStopping = false;
           makeControls();
           setButtonState(true);
-          const realtime = startRealtimeSpeech(button);
+          const realtime = startRealtimeSpeech();
           if (!realtime) await startFallbackRecorder(button);
         };
 
@@ -212,9 +220,12 @@
           event.stopPropagation();
           if (recognition || (recorder && recorder.state !== "inactive")) {
             if (recognition) {
-              if (isPaused) togglePause(controls?.querySelector("span"), controls?.querySelectorAll("button")[0]);
-              else togglePause(controls?.querySelector("span"), controls?.querySelectorAll("button")[0]);
-            } else finishVoice();
+              const status = controls?.querySelector("span");
+              const pause = controls?.querySelectorAll("button")?.[0];
+              if (status && pause) togglePause(status, pause);
+            } else {
+              finishVoice();
+            }
           } else startVoice(button);
         }, true);
       })();
