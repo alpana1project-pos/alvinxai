@@ -9,5 +9,85 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      (() => {
+        let recorder = null;
+        let chunks = [];
+        let activeButton = null;
+        let stream = null;
+
+        const setInputText = (text) => {
+          const field = document.querySelector('textarea[placeholder="Tulis apa aja..."]') || document.querySelector('input[placeholder="Tulis apa aja..."]');
+          if (!field || !text) return;
+          const proto = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+          const current = field.value?.trim();
+          setter?.call(field, current ? `${current} ${text}` : text);
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+          field.focus();
+        };
+
+        const stopRecording = () => {
+          if (recorder && recorder.state !== "inactive") recorder.stop();
+          if (stream) stream.getTracks().forEach((track) => track.stop());
+          stream = null;
+          if (activeButton) {
+            activeButton.title = "Rekam suara";
+            activeButton.setAttribute("aria-label", "Rekam suara");
+          }
+        };
+
+        const startRecording = async (button) => {
+          if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+            alert("Browser ini tidak mendukung perekaman suara. Coba Chrome versi terbaru.");
+            return;
+          }
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const preferred = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+            recorder = preferred ? new MediaRecorder(stream, { mimeType: preferred }) : new MediaRecorder(stream);
+            chunks = [];
+            activeButton = button;
+            button.title = "Sedang merekam — tap lagi untuk berhenti";
+            button.setAttribute("aria-label", "Berhenti merekam");
+            recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+            recorder.onerror = () => stopRecording();
+            recorder.onstop = async () => {
+              const blob = new Blob(chunks, { type: recorder?.mimeType || "audio/webm" });
+              recorder = null;
+              if (!blob.size) return;
+              button.title = "Memproses suara...";
+              try {
+                const form = new FormData();
+                form.append("file", blob, "alvin-voice.webm");
+                const response = await fetch("/api/alvin-transcribe", { method: "POST", body: form });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data?.error || "Transkripsi gagal");
+                setInputText(String(data?.text || ""));
+              } catch (error) {
+                alert(error?.message || "Suara belum bisa diproses. Coba lagi.");
+              } finally {
+                button.title = "Rekam suara";
+                button.setAttribute("aria-label", "Rekam suara");
+              }
+            };
+            recorder.start();
+          } catch (error) {
+            if (stream) stream.getTracks().forEach((track) => track.stop());
+            stream = null;
+            alert(error?.name === "NotAllowedError" ? "Izin mikrofon ditolak. Izinkan mikrofon untuk Alvin lalu coba lagi." : "Mikrofon tidak bisa digunakan.");
+          }
+        };
+
+        document.addEventListener("click", (event) => {
+          const button = event.target?.closest?.("button");
+          if (!button || !button.querySelector("svg.lucide-mic")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (recorder && recorder.state !== "inactive") stopRecording();
+          else startRecording(button);
+        }, true);
+      })();
+    </script>
   </body>
 </html>
